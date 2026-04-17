@@ -12,11 +12,9 @@ from fusion import CaptionFusion
 Config.validate()
 
 print("[INIT] Loading models...")
-
 detector = ObjectDetector()
 captioner = SceneCaptioner()
 fusion = CaptionFusion()
-
 print("[INIT] Models ready")
 
 @asynccontextmanager
@@ -33,25 +31,38 @@ async def stream(ws: WebSocket):
 
     try:
         while True:
-            # receive frame
             data = await ws.receive_bytes()
 
-            # decode image fast
-            nparr = np.frombuffer(data, np.uint8)
-            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            try:
+                # Decode image
+                nparr = np.frombuffer(data, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
-            # resize (IMPORTANT for speed)
-            frame = cv2.resize(frame, (320, 240))
+                if frame is None:
+                    continue
 
-            # process
-            detections = detector.detect(frame)
-            caption = captioner.caption(Image.fromarray(frame))
-            result = fusion.build_announcement(detections, caption)
+                # 🔥 IMPORTANT: reduce size (prevents crash)
+                frame = cv2.resize(frame, (224, 224))
 
-            # send result
-            await ws.send_text(result or "")
+                # Detection
+                detections = detector.detect(frame)
+
+                # 🔥 TEMPORARY (stable mode)
+                caption = "scene detected"
+
+                # (Later you can enable BLIP again)
+                # caption = captioner.caption(Image.fromarray(frame))
+
+                result = fusion.build_announcement(detections, caption)
+
+                await ws.send_text(result or "")
+
+            except Exception as e:
+                print("🔥 PROCESS ERROR:", e)
+                await ws.send_text("error")
 
     except Exception as e:
-        print("[WS ERROR]", e)
+        print("🔥 WS ERROR:", e)
+
     finally:
         print("[WS] Client disconnected")
