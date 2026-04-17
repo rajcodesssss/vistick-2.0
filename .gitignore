@@ -4,3 +4,4 @@ __pycache__/
 audio_output/
 *.mp3
 *.pt
+env
