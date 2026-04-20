@@ -23,9 +23,10 @@ print("[Step 2] BLIP ready")
 
 fusion = CaptionFusion()
 
-# Global control state
+# ✅ UPDATED GLOBAL CONTROL STATE
 control = {
-    "running"          : False,
+    "running": False,
+    "language": "both",   # 🔥 ADDED
     "last_announcement": ""
 }
 
@@ -44,8 +45,8 @@ app = FastAPI(
 @app.get("/health")
 def health():
     return {
-        "status" : "ok",
-        "models" : "loaded",
+        "status": "ok",
+        "models": "loaded",
         "running": control["running"]
     }
 
@@ -62,20 +63,39 @@ def set_control(state: int):
     return {
         "success": True,
         "running": control["running"],
-        "status" : status
+        "status": status
     }
 
+# ✅ UPDATED (LANGUAGE ADDED)
 @app.get("/control/state")
 def get_control_state():
     return {
         "running": control["running"],
-        "state"  : 1 if control["running"] else 0
+        "language": control["language"],   # 🔥 ADDED
+        "state": 1 if control["running"] else 0
+    }
+
+# ✅ NEW API
+@app.post("/control/language")
+def set_language(lang: str):
+    if lang not in ["en", "hi", "both"]:
+        return JSONResponse(
+            {"error": "invalid language"},
+            status_code=400
+        )
+
+    control["language"] = lang
+    print(f"[Control] Language set to {lang}")
+
+    return {
+        "success": True,
+        "language": lang
     }
 
 @app.get("/status")
 def get_status():
     return {
-        "running"          : control["running"],
+        "running": control["running"],
         "last_announcement": control["last_announcement"]
     }
 
@@ -87,29 +107,24 @@ async def analyze(file: UploadFile = File(...)):
             status_code=403
         )
     try:
-        contents  = await file.read()
+        contents = await file.read()
         pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
         bgr_frame = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
-        detections    = detector.detect(bgr_frame)
+        detections = detector.detect(bgr_frame)
         scene_caption = captioner.caption(pil_image)
-        announcement  = fusion.build_announcement(detections, scene_caption)
+        announcement = fusion.build_announcement(detections, scene_caption)
 
-        # Clean leaked prompt text
         if announcement:
             announcement = announcement.replace(
                 "describe this scene for a visually impaired person including surroundings, layout, and any hazards :",
                 ""
             ).strip().lstrip(".,: ").strip()
 
-        # Translate to Hindi
         hindi = ""
         if announcement:
             try:
-                hindi = GoogleTranslator(
-                    source="en",
-                    target="hi"
-                ).translate(announcement)
+                hindi = GoogleTranslator(source="en", target="hi").translate(announcement)
                 print(f"[Translation] ✓ {hindi}")
             except Exception as e:
                 print(f"[Translation Error] {e}")
@@ -122,11 +137,11 @@ async def analyze(file: UploadFile = File(...)):
         print(f"[Analyze] HI: {hindi}")
 
         return JSONResponse({
-            "success"        : True,
+            "success": True,
             "announcement_en": announcement or "",
             "announcement_hi": hindi or "",
-            "scene_caption"  : scene_caption,
-            "detections"     : detections
+            "scene_caption": scene_caption,
+            "detections": detections
         })
 
     except Exception as e:
@@ -135,3 +150,4 @@ async def analyze(file: UploadFile = File(...)):
             {"success": False, "error": str(e)},
             status_code=500
         )
+
