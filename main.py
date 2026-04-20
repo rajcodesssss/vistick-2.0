@@ -5,6 +5,7 @@ from PIL import Image
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
+from deep_translator import GoogleTranslator
 from config import Config
 from detector import ObjectDetector
 from captioner import SceneCaptioner
@@ -22,6 +23,12 @@ print("[Step 2] BLIP ready")
 
 fusion = CaptionFusion()
 
+# Global control state
+control = {
+    "running"          : False,
+    "last_announcement": ""
+}
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     print("[Server] All models loaded — ready to serve")
@@ -36,38 +43,95 @@ app = FastAPI(
 
 @app.get("/health")
 def health():
-    """Raspberry Pi calls this first to confirm server is ready."""
-    return {"status": "ok", "models": "loaded"}
+    return {
+        "status" : "ok",
+        "models" : "loaded",
+        "running": control["running"]
+    }
+
+@app.post("/control")
+def set_control(state: int):
+    if state not in [0, 1]:
+        return JSONResponse(
+            {"error": "state must be 0 or 1"},
+            status_code=400
+        )
+    control["running"] = bool(state)
+    status = "started" if state == 1 else "stopped"
+    print(f"[Control] Pipeline {status} by app")
+    return {
+        "success": True,
+        "running": control["running"],
+        "status" : status
+    }
+
+@app.get("/control/state")
+def get_control_state():
+    return {
+        "running": control["running"],
+        "state"  : 1 if control["running"] else 0
+    }
+
+@app.get("/status")
+def get_status():
+    return {
+        "running"          : control["running"],
+        "last_announcement": control["last_announcement"]
+    }
 
 @app.post("/analyze")
 async def analyze(file: UploadFile = File(...)):
-    """
-    Core endpoint.
-    Receives JPEG frame from Raspberry Pi camera.
-    Runs YOLOv8 + BLIP + Fusion.
-    Returns plain announcement text — Pi speaks it locally.
-    """
+    if not control["running"]:
+        return JSONResponse(
+            {"success": False, "error": "Pipeline stopped"},
+            status_code=403
+        )
     try:
-        # Read uploaded JPEG bytes
-        contents = await file.read()
+        contents  = await file.read()
         pil_image = Image.open(io.BytesIO(contents)).convert("RGB")
-
-        # Convert to BGR numpy for YOLO
         bgr_frame = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
 
-        # Run detection + captioning in parallel would be ideal
-        # but keeping sequential for simplicity
-        detections = detector.detect(bgr_frame)
+        detections    = detector.detect(bgr_frame)
         scene_caption = captioner.caption(pil_image)
-        announcement = fusion.build_announcement(detections, scene_caption)
+        announcement  = fusion.build_announcement(detections, scene_caption)
+
+        # Clean leaked prompt text
+        if announcement:
+            announcement = announcement.replace(
+                "describe this scene for a visually impaired person including surroundings, layout, and any hazards :",
+                ""
+            ).strip().lstrip(".,: ").strip()
+
+        # Translate to Hindi
+        hindi = ""
+        if announcement:
+            try:
+                hindi = GoogleTranslator(
+                    source="en",
+                    target="hi"
+                ).translate(announcement)
+                print(f"[Translation] ✓ {hindi}")
+            except Exception as e:
+                print(f"[Translation Error] {e}")
+                hindi = ""
+
+        if announcement:
+            control["last_announcement"] = announcement
+
+        print(f"[Analyze] EN: {announcement}")
+        print(f"[Analyze] HI: {hindi}")
 
         return JSONResponse({
-            "success": True,
-            "announcement": announcement or "",
-            "scene_caption": scene_caption,
-            "detections": detections
+            "success"        : True,
+            "announcement_en": announcement or "",
+            "announcement_hi": hindi or "",
+            "scene_caption"  : scene_caption,
+            "detections"     : detections
         })
 
     except Exception as e:
         print(f"[Error] {e}")
-        return JSONResponse({"success": False, "error": str(e)}, status_code=500)
+        return JSONResponse(
+            {"success": False, "error": str(e)},
+            status_code=500
+        )
